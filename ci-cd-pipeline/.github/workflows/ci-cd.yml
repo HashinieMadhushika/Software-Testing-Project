@@ -1,0 +1,103 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  backend-ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+    steps:
+    - uses: actions/checkout@v4
+    - name: Use Node.js 20.x
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20.x
+        cache: 'npm'
+        cache-dependency-path: backend/package-lock.json
+    - name: Install Dependencies
+      run: npm ci
+    - name: Run Tests
+      run: |
+        if [ -f "package.json" ] && npm run | grep -q "test"; then
+          npm test
+        else
+          echo "No test script found, skipping tests"
+        fi
+
+  frontend-ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+    steps:
+    - uses: actions/checkout@v4
+    - name: Use Node.js 20.x
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20.x
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+    - name: Install Dependencies
+      run: npm ci
+    - name: Run unit tests
+      run: npm test
+    - name: Build project
+      run: npm run build
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: frontend-build
+        path: frontend/build/
+        retention-days: 7
+
+  e2e-test:
+    needs: [backend-ci, frontend-ci]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Use Node.js 20.x
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20.x
+    
+    - name: Install dependencies
+      run: |
+        npm ci --prefix backend
+        npm ci --prefix frontend
+    
+    - name: Start Backend Server
+      run: |
+        cd backend
+        nohup npm start > backend.log 2>&1 &
+        echo $! > backend.pid
+      
+    - name: Start Frontend Server
+      run: |
+        cd frontend
+        nohup npm start > frontend.log 2>&1 &
+        echo $! > frontend.pid
+      
+    - name: Wait for servers and check health
+      run: |
+        sleep 15
+        # Add health checks for your specific endpoints
+        curl -f http://localhost:3000 || curl -f http://localhost:3001 || echo "Servers starting..."
+        sleep 10
+      
+    - name: Run E2E tests
+      run: |
+        cd frontend
+        node selenium/ui.test.js
+      
+    - name: Stop servers
+      if: always()
+      run: |
+        kill $(cat backend/backend.pid) 2>/dev/null || true
+        kill $(cat frontend/frontend.pid) 2>/dev/null || true
+        pkill -f "node.*start" || true
